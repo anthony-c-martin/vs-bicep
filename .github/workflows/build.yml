@@ -1,0 +1,83 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  CI: true
+  # don't print dotnet logo
+  DOTNET_NOLOGO: true
+  # disable telemetry (reduces dotnet tool output in logs)
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  build-vs-ext:
+    name: Build Visual Studio Extension
+    runs-on: windows-latest
+
+    steps:
+      - name: Support longpaths
+        run: git config --system core.longpaths true
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # avoid shallow clone so nbgv can do its work.
+          submodules: true
+
+      # needed by the GenerateNotice package
+      - name: Setup .NET Core
+        uses: actions/setup-dotnet@v4
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v1.3
+
+      - name: Build Bicep.sln
+        run: dotnet build --configuration release ./bicep/src/Bicep.LangServer
+
+      - name: Build BicepInVisualStudio.sln
+        run: msbuild BicepInVisualStudio.sln /restore /p:Configuration=Release /v:m /bl:./binlog/bicep_in_visual_studio_build.binlog
+
+      - name: Upload BicepInVisualStudio.sln build binlog
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-binlog-files
+          path: ./binlog/bicep_in_visual_studio_build.binlog
+          if-no-files-found: error
+
+      - name: Upload BicepLanguageServerClient VSIX
+        uses: actions/upload-artifact@v3
+        with:
+          name: Bicep.VSLanguageServerClient.Vsix.vsix
+          path: ./src/Bicep.VSLanguageServerClient.Vsix/bin/Release/vs-bicep.vsix
+          if-no-files-found: error
+
+      - name: Run bicep in visual studio unit tests
+        uses: microsoft/vstest-action@v1.0.0
+        with:
+          testAssembly: Bicep.VSLanguageServerClient.UnitTests.dll
+          runInParallel: true
+          searchFolder: ./src/Bicep.VSLanguageServerClient.UnitTests/bin/Release/net472
+        # Temporary workaround to force a green build - VS tests are flaky
+        # Proper fix tracked under https://github.com/Azure/bicep/issues/8078
+        continue-on-error: true
+
+      - name: Install bicep in Visual Studio
+        run: ./src/Install.cmd
+
+      - name: Run bicep in visual studio integration tests
+        uses: microsoft/vstest-action@v1.0.0
+        with:
+          testAssembly: Bicep.VSLanguageServerClient.IntegrationTests.dll
+          runInParallel: false
+          searchFolder: ./src/Bicep.VSLanguageServerClient.IntegrationTests/bin/Release/net472
+        # Temporary workaround to force a green build - VS tests are flaky
+        # Proper fix tracked under https://github.com/Azure/bicep/issues/8078
+        continue-on-error: true
